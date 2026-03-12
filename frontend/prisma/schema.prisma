@@ -1,0 +1,224 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────────────────────────
+// Enums
+// ───────────────────────────────────────────────
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+  MANAGER
+  SUPPORT
+}
+
+enum OrderStatus {
+  PENDING
+  PAYMENT_PROCESSING
+  PAYMENT_CONFIRMED
+  AWAITING_FULFILLMENT
+  SHIPPED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum FulfillmentMethod {
+  SHIPPING
+  BOPIS  // Buy Online, Pick Up In-Store
+}
+
+enum TrackingStatus {
+  LABEL_CREATED
+  SHIPPED
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED_DELIVERY
+  RETURNED
+}
+
+enum TradeInInspectionStatus {
+  PENDING
+  RECEIVED
+  EVALUATED
+  CREDITED
+  REJECTED
+}
+
+enum ConditionGrade {
+  A // Excelente — sem arranhões
+  B // Bom — desgaste leve
+  C // Regular — danos visíveis
+}
+
+// ───────────────────────────────────────────────
+// User
+// ───────────────────────────────────────────────
+model User {
+  id                String   @id @default(uuid())
+  name              String
+  email             String   @unique
+  passwordHash      String   @map("password_hash")
+  role              UserRole @default(CUSTOMER)
+  tradeInCredits    Decimal  @default(0) @map("trade_in_credits") @db.Decimal(10, 2)
+  mfaEnabled        Boolean  @default(false) @map("mfa_enabled")
+  mfaSecret         String?  @map("mfa_secret")
+  consentGdpr       Boolean  @default(false) @map("consent_gdpr")
+  refreshToken      String?  @map("refresh_token")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  orders            Order[]
+  tradeIns          TradeInProgram[]
+  wishlist          Product[] @relation("UserWishlist")
+
+  @@map("users")
+}
+
+// ───────────────────────────────────────────────
+// Product
+// ───────────────────────────────────────────────
+model Product {
+  id            String   @id @default(uuid())
+  pimId         String?  @unique @map("pim_id")          // referência ao Akeneo/Pimcore
+  name          String
+  slug          String   @unique
+  description   String?
+  basePrice     Decimal  @map("base_price") @db.Decimal(10, 2)
+  dynamicPrice  Decimal? @map("dynamic_price") @db.Decimal(10, 2) // calculado via IA/demanda
+  brand         String?
+  category      String?
+  imageUrls     String[] @map("image_urls")
+  specs         Json     @default("{}") @db.JsonB         // especificações técnicas flexíveis
+  isRefurbished Boolean  @default(false) @map("is_refurbished")
+  isFeatured    Boolean  @default(false) @map("is_featured")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  inventory     Inventory[]
+  orderItems    OrderItem[]
+  wishedBy      User[]      @relation("UserWishlist")
+
+  @@index([slug])
+  @@index([category])
+  @@index([brand])
+  @@map("products")
+}
+
+// ───────────────────────────────────────────────
+// Location (RDC / Loja Física)
+// ───────────────────────────────────────────────
+model Location {
+  id        String  @id @default(uuid())
+  name      String
+  type      String  // "RDC" ou "STORE"
+  address   String
+  zipCode   String  @map("zip_code")
+  city      String
+  state     String
+  lat       Float?
+  lng       Float?
+  isActive  Boolean @default(true) @map("is_active")
+
+  inventory Inventory[]
+
+  @@index([zipCode])
+  @@map("locations")
+}
+
+// ───────────────────────────────────────────────
+// Inventory
+// ───────────────────────────────────────────────
+model Inventory {
+  id               String   @id @default(uuid())
+  productId        String   @map("product_id")
+  locationId       String   @map("location_id")
+  quantity         Int      @default(0)
+  reservedQuantity Int      @default(0) @map("reserved_quantity")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  product  Product  @relation(fields: [productId], references: [id])
+  location Location @relation(fields: [locationId], references: [id])
+
+  @@unique([productId, locationId])
+  @@index([productId])
+  @@index([locationId])
+  @@map("inventories")
+}
+
+// ───────────────────────────────────────────────
+// Order
+// ───────────────────────────────────────────────
+model Order {
+  id                String            @id @default(uuid())
+  userId            String            @map("user_id")
+  totalAmount       Decimal           @map("total_amount") @db.Decimal(10, 2)
+  discountApplied   Decimal           @default(0) @map("discount_applied") @db.Decimal(10, 2)
+  tradeInCreditsUsed Decimal          @default(0) @map("trade_in_credits_used") @db.Decimal(10, 2)
+  status            OrderStatus       @default(PENDING)
+  fulfillmentMethod FulfillmentMethod @default(SHIPPING) @map("fulfillment_method")
+  trackingStatus    TrackingStatus?   @map("tracking_status")
+  trackingCode      String?           @map("tracking_code")
+  locationId        String?           @map("location_id")   // para BOPIS
+  shippingAddress   Json?             @map("shipping_address")
+  paymentIntentId   String?           @map("payment_intent_id")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  user      User        @relation(fields: [userId], references: [id])
+  items     OrderItem[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id         String  @id @default(uuid())
+  orderId    String  @map("order_id")
+  productId  String  @map("product_id")
+  quantity   Int
+  unitPrice  Decimal @map("unit_price") @db.Decimal(10, 2)
+
+  order   Order   @relation(fields: [orderId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@map("order_items")
+}
+
+// ───────────────────────────────────────────────
+// TradeInProgram (Recommerce)
+// ───────────────────────────────────────────────
+model TradeInProgram {
+  id                       String                  @id @default(uuid())
+  userId                   String                  @map("user_id")
+  deviceCategory           String                  @map("device_category")   // ex: Smartphone, Notebook
+  deviceBrand              String                  @map("device_brand")
+  deviceModel              String                  @map("device_model")
+  conditionGrade           ConditionGrade          @map("condition_grade")
+  estimatedRebateValue     Decimal                 @map("estimated_rebate_value") @db.Decimal(10, 2)
+  reverseLogisticsTracking String?                 @map("reverse_logistics_tracking")
+  inspectionStatus         TradeInInspectionStatus @default(PENDING) @map("inspection_status")
+  inspectionNotes          String?                 @map("inspection_notes")
+  creditedAt               DateTime?               @map("credited_at")
+  createdAt                DateTime                @default(now()) @map("created_at")
+  updatedAt                DateTime                @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([inspectionStatus])
+  @@map("trade_in_programs")
+}
